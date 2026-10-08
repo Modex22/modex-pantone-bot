@@ -1,275 +1,1073 @@
 import os
 import io
 import sqlite3
+import threading
 from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters
-)
+
+from flask import Flask
 from PIL import Image
-from color_utils import (
-    extract_dominant_colors, hex_to_rgb, rgb_to_hex,
-    nearest_matches, make_color_tile, make_color_card,
-    load_palette
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    BotCommand,
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
 )
 
-BASE = Path(__file__).parent
-PALETTE_FILE = BASE / "pantone_colors.csv"
-DB_FILE = BASE / "history.db"
+from color_utils import (
+    extract_dominant_colors,
+    hex_to_rgb,
+    rgb_to_hex,
+    nearest_matches,
+    make_color_tile,
+    make_color_card,
+    load_palette,
+)
 
-PALETTE = load_palette(PALETTE_FILE)
 
-def db():
-    con = sqlite3.connect(DB_FILE)
-    con.execute("""CREATE TABLE IF NOT EXISTS history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        input_hex TEXT,
-        pantone TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )""")
-    return con
+# ============================================================
+# CONFIG
+# ============================================================
 
-def save_history(user_id, input_hex, pantone):
-    con = db()
-    con.execute("INSERT INTO history(user_id,input_hex,pantone) VALUES(?,?,?)",
-                (user_id, input_hex, pantone))
-    con.commit()
-    con.close()
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / "history.db"
+PALETTE_PATH = BASE_DIR / "pantone_colors.csv"
 
-def menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📸 Image → Pantone", callback_data="image")],
-        [InlineKeyboardButton("🔢 HEX → Pantone", callback_data="hex")],
-        [InlineKeyboardButton("🌈 RGB → Pantone", callback_data="rgb")],
-        [InlineKeyboardButton("🧵 TCX Match", callback_data="tcx")],
-        [InlineKeyboardButton("🎨 Color Card", callback_data="card")],
-        [InlineKeyboardButton("🕘 History", callback_data="history")],
-        [InlineKeyboardButton("ℹ️ Help", callback_data="help")],
-    ])
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text(
-        "🎨 *MODEX PANTONE*\n\n"
-        "Send an image or color value and I'll find the closest "
-        "digital Pantone match.\n\n"
-        "⚠️ Digital matching is an approximation. Verify against a "
-        "physical swatch before production.",
-        parse_mode="Markdown",
-        reply_markup=menu()
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable is missing.")
+
+
+# ============================================================
+# PALETTE
+# ============================================================
+
+PALETTE = load_palette(PALETTE_PATH)
+
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            input_type TEXT,
+            input_value TEXT,
+            pantone_name TEXT,
+            rgb TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def save_history(
+    user_id,
+    input_type,
+    input_value,
+    pantone_name,
+    rgb
+):
+    conn = sqlite3.connect(DB_PATH)
+
+    conn.execute(
+        """
+        INSERT INTO history
+        (user_id, input_type, input_value, pantone_name, rgb)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            user_id,
+            input_type,
+            input_value,
+            pantone_name,
+            str(rgb),
+        ),
     )
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    action = q.data
+    conn.commit()
+    conn.close()
 
-    if action == "image":
-        context.user_data["mode"] = "image"
-        await q.message.reply_text("📸 Send the image you want me to analyze.")
-    elif action == "hex":
-        context.user_data["mode"] = "hex"
-        await q.message.reply_text("🔢 Send a HEX value, e.g. `#C41E3A`.", parse_mode="Markdown")
-    elif action == "rgb":
-        context.user_data["mode"] = "rgb"
-        await q.message.reply_text("🌈 Send RGB as `186, 12, 47`.", parse_mode="Markdown")
-    elif action == "tcx":
-        context.user_data["collection"] = "TCX"
-        context.user_data["mode"] = "hex"
-        await q.message.reply_text("🧵 TCX mode enabled. Send a HEX value, or send an image.")
-    elif action == "card":
-        await q.message.reply_text("🎨 Send an image to generate a color card.")
-        context.user_data["mode"] = "card"
-    elif action == "history":
-        con = db()
-        rows = con.execute(
-            "SELECT input_hex,pantone,created_at FROM history WHERE user_id=? "
-            "ORDER BY id DESC LIMIT 10", (q.from_user.id,)
-        ).fetchall()
-        con.close()
-        if not rows:
-            await q.message.reply_text("🕘 No color matches yet.", reply_markup=menu())
-        else:
-            lines = ["🕘 *RECENT MATCHES*\n"]
-            for h, p, d in rows:
-                lines.append(f"• `{h}` → *{p}* ({d})")
-            await q.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=menu())
-    elif action == "help":
-        await q.message.reply_text(
-            "How to use:\n\n"
-            "📸 Image → extracts dominant colors and matches them.\n"
-            "🔢 HEX → matches a HEX color.\n"
-            "🌈 RGB → matches an RGB color.\n"
-            "🧵 TCX → filters the local dataset to TCX entries.\n"
-            "🎨 Color Card → creates a PNG swatch card.\n\n"
-            "Add your licensed/authorized Pantone dataset to "
-            "`pantone_colors.csv` for production use.",
-            reply_markup=menu()
+
+def get_history(user_id, limit=10):
+    conn = sqlite3.connect(DB_PATH)
+
+    rows = conn.execute(
+        """
+        SELECT input_type, input_value, pantone_name, rgb, created_at
+        FROM history
+        WHERE user_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (user_id, limit),
+    ).fetchall()
+
+    conn.close()
+
+    return rows
+
+
+# ============================================================
+# RENDER WEB SERVER
+# ============================================================
+
+web_app = Flask(__name__)
+
+
+@web_app.route("/")
+def home():
+    return "MODEX PANTONE BOT IS ONLINE", 200
+
+
+@web_app.route("/health")
+def health():
+    return "OK", 200
+
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+
+    web_app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+        use_reloader=False,
+    )
+
+
+# ============================================================
+# TELEGRAM COMMAND MENU
+# ============================================================
+
+async def set_commands(app):
+    commands = [
+        BotCommand("start", "Bot main menu"),
+        BotCommand("settings", "Bot settings"),
+        BotCommand("hex", "HEX → Pantone"),
+        BotCommand("image", "Image → Pantone"),
+        BotCommand("rgb", "RGB → Pantone"),
+        BotCommand("cmyk", "CMYK → Pantone"),
+        BotCommand("tcx", "TCX match"),
+        BotCommand("card", "Generate color card"),
+        BotCommand("history", "Match history"),
+        BotCommand("help", "How to use"),
+    ]
+
+    await app.bot.set_my_commands(commands)
+
+
+# ============================================================
+# MAIN MENU
+# ============================================================
+
+def main_menu():
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "🎨 Image → Pantone",
+                callback_data="image",
+            ),
+            InlineKeyboardButton(
+                "🔢 HEX → Pantone",
+                callback_data="hex",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🌈 RGB → Pantone",
+                callback_data="rgb",
+            ),
+            InlineKeyboardButton(
+                "👕 TCX Match",
+                callback_data="tcx",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🖼 Color Card",
+                callback_data="card",
+            ),
+            InlineKeyboardButton(
+                "📜 History",
+                callback_data="history",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "⚙️ Settings",
+                callback_data="settings",
+            ),
+            InlineKeyboardButton(
+                "❓ Help",
+                callback_data="help",
+            ),
+        ],
+    ]
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+# ============================================================
+# /START
+# ============================================================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🎨 *MODEX PANTONE*\n\n"
+        "Match colors to the closest Pantone reference.\n\n"
+        "Choose an option below:",
+        parse_mode="Markdown",
+        reply_markup=main_menu(),
+    )
+
+
+# ============================================================
+# /HELP
+# ============================================================
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🎨 *MODEX PANTONE — HOW TO USE*\n\n"
+        "• `/hex` — Match a HEX color\n"
+        "• `/rgb` — Match an RGB color\n"
+        "• `/image` — Match colors from an image\n"
+        "• `/tcx` — Search the TCX palette\n"
+        "• `/card` — Generate a color card\n"
+        "• `/history` — View previous matches\n"
+        "• `/settings` — Bot settings\n\n"
+        "You can also simply send me an image.",
+        parse_mode="Markdown",
+        reply_markup=main_menu(),
+    )
+
+
+# ============================================================
+# /SETTINGS
+# ============================================================
+
+async def settings_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    await update.message.reply_text(
+        "⚙️ *MODEX PANTONE SETTINGS*\n\n"
+        "Current mode:\n"
+        "• Color matching: Lab distance\n"
+        "• Palette: Local Pantone dataset\n"
+        "• Image extraction: Dominant colors\n\n"
+        "More settings can be added later.",
+        parse_mode="Markdown",
+        reply_markup=main_menu(),
+    )
+
+
+# ============================================================
+# /HEX
+# ============================================================
+
+async def hex_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if context.args:
+        value = context.args[0]
+        await process_hex(
+            update,
+            context,
+            value,
+            "HEX",
+        )
+        return
+
+    await update.message.reply_text(
+        "🔢 Send a HEX color.\n\n"
+        "Example:\n"
+        "`/hex #FF0000`",
+        parse_mode="Markdown",
+    )
+
+
+# ============================================================
+# /RGB
+# ============================================================
+
+async def rgb_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if context.args:
+        value = " ".join(context.args)
+
+        await process_rgb(
+            update,
+            context,
+            value,
+        )
+        return
+
+    await update.message.reply_text(
+        "🌈 Send RGB values.\n\n"
+        "Example:\n"
+        "`/rgb 255 0 0`",
+        parse_mode="Markdown",
+    )
+
+
+# ============================================================
+# /CMYK
+# ============================================================
+
+async def cmyk_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    await update.message.reply_text(
+        "🖨 *CMYK → Pantone*\n\n"
+        "CMYK matching is not enabled in this MVP yet.\n\n"
+        "Use `/hex` or `/rgb` for now.",
+        parse_mode="Markdown",
+    )
+
+
+# ============================================================
+# /IMAGE
+# ============================================================
+
+async def image_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["mode"] = "image"
+
+    await update.message.reply_text(
+        "🎨 Send me an image and I'll extract its dominant colors "
+        "and find the closest Pantone references."
+    )
+
+
+# ============================================================
+# /TCX
+# ============================================================
+
+async def tcx_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["mode"] = "tcx"
+
+    await update.message.reply_text(
+        "👕 *TCX MATCH*\n\n"
+        "Send a HEX color.\n\n"
+        "Example:\n"
+        "`#C6233A`",
+        parse_mode="Markdown",
+    )
+
+
+# ============================================================
+# /CARD
+# ============================================================
+
+async def card_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data["mode"] = "card"
+
+    await update.message.reply_text(
+        "🖼 *COLOR CARD*\n\n"
+        "Send an image and I'll generate a Pantone-style "
+        "color card from the dominant colors.",
+        parse_mode="Markdown",
+    )
+
+
+# ============================================================
+# /HISTORY
+# ============================================================
+
+async def history_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    rows = get_history(update.effective_user.id)
+
+    if not rows:
+        await update.message.reply_text(
+            "📜 You don't have any match history yet."
+        )
+        return
+
+    text = "📜 *YOUR MATCH HISTORY*\n\n"
+
+    for row in rows:
+        input_type, input_value, pantone_name, rgb, created_at = row
+
+        text += (
+            f"• `{input_value}` → *{pantone_name}*\n"
+            f"  {created_at}\n\n"
         )
 
-def result_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 New Match", callback_data="hex"),
-         InlineKeyboardButton("🎨 Color Card", callback_data="card")],
-        [InlineKeyboardButton("🕘 History", callback_data="history"),
-         InlineKeyboardButton("🏠 Menu", callback_data="home")]
-    ])
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+    )
 
-async def process_rgb(update, context, rgb, label=None):
-    collection = context.user_data.get("collection")
-    matches = nearest_matches(rgb, PALETTE, collection=collection, limit=3)
+
+# ============================================================
+# HEX PROCESSING
+# ============================================================
+
+async def process_hex(
+    update,
+    context,
+    value,
+    input_type="HEX",
+):
+    try:
+        rgb = hex_to_rgb(value)
+    except Exception:
+        await update.message.reply_text(
+            "❌ Invalid HEX color.\n\n"
+            "Example:\n"
+            "`#FF0000`",
+            parse_mode="Markdown",
+        )
+        return
+
+    collection = None
+
+    if context.user_data.get("mode") == "tcx":
+        collection = "TCX"
+
+    matches = nearest_matches(
+        rgb,
+        PALETTE,
+        n=3,
+        collection=collection,
+    )
+
     if not matches:
-        await update.message.reply_text("No matching colors found in the local palette.")
+        await update.message.reply_text(
+            "❌ No matching colors found."
+        )
         return
 
     best = matches[0]
-    save_history(update.effective_user.id, rgb_to_hex(rgb), best["name"])
 
-    tile = make_color_tile(rgb, best)
-    bio = io.BytesIO()
-    tile.save(bio, "PNG")
-    bio.seek(0)
-
-    text = (
-        "🎨 *CLOSEST DIGITAL MATCH*\n\n"
-        f"*{best['name']}*\n"
-        f"{best.get('description','')}\n\n"
-        f"HEX: `{rgb_to_hex(rgb)}`\n"
-        f"RGB: `{rgb[0]}, {rgb[1]}, {rgb[2]}`\n"
-        f"Distance: `{best['distance']:.2f}`\n\n"
-        "⚠️ Digital approximation — verify with a physical swatch before production."
+    pantone_name = best["name"]
+    pantone_rgb = (
+        best["r"],
+        best["g"],
+        best["b"],
     )
-    await update.message.reply_photo(bio, caption=text, parse_mode="Markdown",
-                                      reply_markup=result_keyboard())
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    mode = context.user_data.get("mode", "hex")
+    save_history(
+        update.effective_user.id,
+        input_type,
+        value,
+        pantone_name,
+        pantone_rgb,
+    )
 
+    response = (
+        f"🎨 *COLOR MATCH*\n\n"
+        f"Input: `{value}`\n"
+        f"RGB: `{rgb}`\n\n"
+        f"🏆 *Closest Match*\n"
+        f"*{pantone_name}*\n"
+        f"RGB: `{pantone_rgb}`\n\n"
+        f"Other close matches:\n"
+    )
+
+    for match in matches[1:]:
+        response += (
+            f"• {match['name']} — "
+            f"RGB {match['r']}, {match['g']}, {match['b']}\n"
+        )
+
+    tile = make_color_tile(
+        pantone_name,
+        pantone_rgb,
+    )
+
+    output = io.BytesIO()
+    tile.save(output, format="PNG")
+    output.seek(0)
+
+    await update.message.reply_photo(
+        photo=output,
+        caption=response,
+        parse_mode="Markdown",
+    )
+
+
+# ============================================================
+# RGB PROCESSING
+# ============================================================
+
+async def process_rgb(
+    update,
+    context,
+    value,
+):
     try:
-        if mode == "rgb":
-            parts = [int(x.strip()) for x in text.replace("(", "").replace(")", "").split(",")]
-            if len(parts) != 3 or any(x < 0 or x > 255 for x in parts):
-                raise ValueError
-            rgb = tuple(parts)
-        else:
-            rgb = hex_to_rgb(text)
+        cleaned = (
+            value.replace(",", " ")
+            .replace("(", " ")
+            .replace(")", " ")
+        )
+
+        parts = cleaned.split()
+
+        if len(parts) != 3:
+            raise ValueError
+
+        rgb = tuple(
+            int(float(x))
+            for x in parts
+        )
+
+        if any(x < 0 or x > 255 for x in rgb):
+            raise ValueError
+
     except Exception:
-        await update.message.reply_text("I couldn't read that color. Try `#C41E3A` or `186, 12, 47`.",
-                                        parse_mode="Markdown")
+        await update.message.reply_text(
+            "❌ Invalid RGB value.\n\n"
+            "Example:\n"
+            "`/rgb 255 0 0`",
+            parse_mode="Markdown",
+        )
         return
 
-    await process_rgb(update, context, rgb)
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    photo = update.message.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
-    data = await file.download_as_bytearray()
-    img = Image.open(io.BytesIO(data)).convert("RGB")
-
-    colors = extract_dominant_colors(img, 4)
-    collection = context.user_data.get("collection")
-    matches = []
-    for rgb in colors:
-        found = nearest_matches(rgb, PALETTE, collection=collection, limit=1)
-        if found:
-            matches.append((rgb, found[0]))
+    matches = nearest_matches(
+        rgb,
+        PALETTE,
+        n=3,
+    )
 
     if not matches:
-        await update.message.reply_text("No colors could be matched. Check your palette dataset.")
+        await update.message.reply_text(
+            "❌ No matching colors found."
+        )
         return
 
-    card = make_color_card(matches)
-    bio = io.BytesIO()
-    card.save(bio, "PNG")
-    bio.seek(0)
+    best = matches[0]
 
-    lines = ["🎨 *COLORS DETECTED*\n"]
-    for i, (rgb, m) in enumerate(matches, 1):
-        lines.append(f"{i}. *{m['name']}* — `{rgb_to_hex(rgb)}` — distance `{m['distance']:.2f}`")
-        save_history(update.effective_user.id, rgb_to_hex(rgb), m["name"])
+    pantone_name = best["name"]
 
-    lines.append("\n⚠️ Digital approximation — verify with physical swatches before production.")
-    await update.message.reply_photo(bio, caption="\n".join(lines), parse_mode="Markdown",
-                                      reply_markup=result_keyboard())
+    pantone_rgb = (
+        best["r"],
+        best["g"],
+        best["b"],
+    )
 
-async def on_button_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "home":
-        await q.message.reply_text("🎨 MODEX PANTONE", reply_markup=menu())
+    save_history(
+        update.effective_user.id,
+        "RGB",
+        value,
+        pantone_name,
+        pantone_rgb,
+    )
+
+    response = (
+        f"🌈 *RGB MATCH*\n\n"
+        f"Input: `{rgb}`\n\n"
+        f"🏆 *Closest Match*\n"
+        f"*{pantone_name}*\n"
+        f"RGB: `{pantone_rgb}`\n\n"
+        f"Other close matches:\n"
+    )
+
+    for match in matches[1:]:
+        response += (
+            f"• {match['name']} — "
+            f"RGB {match['r']}, "
+            f"{match['g']}, "
+            f"{match['b']}\n"
+        )
+
+    tile = make_color_tile(
+        pantone_name,
+        pantone_rgb,
+    )
+
+    output = io.BytesIO()
+    tile.save(output, format="PNG")
+    output.seek(0)
+
+    await update.message.reply_photo(
+        photo=output,
+        caption=response,
+        parse_mode="Markdown",
+    )
 
 
-async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ============================================================
+# IMAGE PROCESSING
+# ============================================================
+
+async def handle_photo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.message or not update.message.photo:
+        return
+
+    photo = update.message.photo[-1]
+
+    file = await context.bot.get_file(
+        photo.file_id
+    )
+
+    image_bytes = await file.download_as_bytearray()
+
+    image = Image.open(
+        io.BytesIO(image_bytes)
+    ).convert("RGB")
+
+    colors = extract_dominant_colors(
+        image,
+        n=5,
+    )
+
+    mode = context.user_data.get(
+        "mode",
+        "image",
+    )
+
+    if mode == "card":
+        matches_for_card = []
+
+        for rgb in colors:
+            matches = nearest_matches(
+                rgb,
+                PALETTE,
+                n=1,
+            )
+
+            if matches:
+                matches_for_card.append(
+                    (
+                        matches[0]["name"],
+                        (
+                            matches[0]["r"],
+                            matches[0]["g"],
+                            matches[0]["b"],
+                        ),
+                    )
+                )
+
+        card = make_color_card(
+            matches_for_card
+        )
+
+        output = io.BytesIO()
+        card.save(output, format="PNG")
+        output.seek(0)
+
+        await update.message.reply_photo(
+            photo=output,
+            caption="🖼 *MODEX PANTONE COLOR CARD*",
+            parse_mode="Markdown",
+        )
+
+        return
+
+    results = []
+
+    for rgb in colors:
+        collection = None
+
+        if mode == "tcx":
+            collection = "TCX"
+
+        matches = nearest_matches(
+            rgb,
+            PALETTE,
+            n=1,
+            collection=collection,
+        )
+
+        if matches:
+            results.append(
+                (
+                    rgb,
+                    matches[0],
+                )
+            )
+
+    if not results:
+        await update.message.reply_text(
+            "❌ Couldn't find matching colors."
+        )
+        return
+
+    text = "🎨 *IMAGE → PANTONE*\n\n"
+
+    for rgb, match in results:
+        pantone_rgb = (
+            match["r"],
+            match["g"],
+            match["b"],
+        )
+
+        save_history(
+            update.effective_user.id,
+            "IMAGE",
+            str(rgb),
+            match["name"],
+            pantone_rgb,
+        )
+
+        text += (
+            f"RGB `{rgb}`\n"
+            f"→ *{match['name']}*\n"
+            f"Pantone RGB `{pantone_rgb}`\n\n"
+        )
+
     await update.message.reply_text(
-        "⚙️ *MODEX PANTONE SETTINGS*\n\nDigital color matching mode is active.\nUse the Telegram menu or buttons to choose a workflow.",
-        parse_mode="Markdown", reply_markup=menu())
+        text,
+        parse_mode="Markdown",
+    )
 
-async def cmd_hex(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["mode"] = "hex"; context.user_data["collection"] = None
-    await update.message.reply_text("🔢 Send a HEX value, e.g. `#C41E3A`.", parse_mode="Markdown")
 
-async def cmd_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["mode"] = "image"; context.user_data["collection"] = None
-    await update.message.reply_text("📸 Send the image you want me to analyze.")
+# ============================================================
+# TEXT HANDLER
+# ============================================================
 
-async def cmd_rgb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["mode"] = "rgb"; context.user_data["collection"] = None
-    await update.message.reply_text("🌈 Send RGB as `186, 12, 47`.", parse_mode="Markdown")
+async def handle_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    text = update.message.text.strip()
 
-async def cmd_cmyk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🖨️ CMYK matching will be added in the next matching-engine upgrade. For now use /hex or /rgb.")
+    mode = context.user_data.get(
+        "mode"
+    )
 
-async def cmd_tcx(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["collection"] = "TCX"; context.user_data["mode"] = "hex"
-    await update.message.reply_text("🧵 TCX mode enabled. Send a HEX value or an image.")
+    # TCX / HEX mode
+    if mode == "tcx":
+        await process_hex(
+            update,
+            context,
+            text,
+            "TCX",
+        )
 
-async def cmd_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["mode"] = "card"
-    await update.message.reply_text("🎨 Send an image to generate a color card.")
+        context.user_data.pop(
+            "mode",
+            None,
+        )
 
-async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    con=db()
-    rows=con.execute("SELECT input_hex,pantone,created_at FROM history WHERE user_id=? ORDER BY id DESC LIMIT 10", (update.effective_user.id,)).fetchall()
-    con.close()
-    if not rows:
-        await update.message.reply_text("🕘 No color matches yet.", reply_markup=menu()); return
-    lines=["🕘 *RECENT MATCHES*\n"]
-    for h,p,d in rows: lines.append(f"• `{h}` → *{p}* ({d})")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=menu())
+        return
 
-async def set_commands(app):
-    from telegram import BotCommand
-    await app.bot.set_my_commands([
-        BotCommand("start", "Bot main menu"), BotCommand("settings", "Bot settings"),
-        BotCommand("hex", "HEX → Pantone"), BotCommand("image", "Image → Pantone"),
-        BotCommand("rgb", "RGB → Pantone"), BotCommand("cmyk", "CMYK → Pantone"),
-        BotCommand("tcx", "TCX match"), BotCommand("card", "Generate color card"),
-        BotCommand("history", "Match history"), BotCommand("help", "How to use")])
+    # Card mode
+    if mode == "card":
+        await update.message.reply_text(
+            "🖼 Please send an image for the color card."
+        )
+        return
 
+    # Automatic HEX detection
+    if text.startswith("#") or (
+        len(text) in (6, 7)
+        and all(
+            c in "0123456789abcdefABCDEF"
+            for c in text.lstrip("#")
+        )
+    ):
+        await process_hex(
+            update,
+            context,
+            text,
+            "HEX",
+        )
+
+        return
+
+    # Automatic RGB detection
+    parts = (
+        text.replace(",", " ")
+        .replace("(", " ")
+        .replace(")", " ")
+        .split()
+    )
+
+    if len(parts) == 3:
+        try:
+            if all(
+                0 <= int(x) <= 255
+                for x in parts
+            ):
+                await process_rgb(
+                    update,
+                    context,
+                    text,
+                )
+                return
+        except ValueError:
+            pass
+
+    await update.message.reply_text(
+        "I didn't recognize that color.\n\n"
+        "Try:\n"
+        "`#FF0000`\n"
+        "`255 0 0`\n\n"
+        "Or send me an image.",
+        parse_mode="Markdown",
+        reply_markup=main_menu(),
+    )
+
+
+# ============================================================
+# BUTTON HANDLER
+# ============================================================
+
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+
+    await query.answer()
+
+    data = query.data
+
+    if data == "image":
+        context.user_data["mode"] = "image"
+
+        await query.message.reply_text(
+            "🎨 Send me an image and I'll match its "
+            "dominant colors to Pantone."
+        )
+
+    elif data == "hex":
+        context.user_data["mode"] = "hex"
+
+        await query.message.reply_text(
+            "🔢 Send a HEX color.\n\n"
+            "Example:\n"
+            "`#FF0000`",
+            parse_mode="Markdown",
+        )
+
+    elif data == "rgb":
+        context.user_data["mode"] = "rgb"
+
+        await query.message.reply_text(
+            "🌈 Send RGB values.\n\n"
+            "Example:\n"
+            "`255 0 0`",
+            parse_mode="Markdown",
+        )
+
+    elif data == "tcx":
+        context.user_data["mode"] = "tcx"
+
+        await query.message.reply_text(
+            "👕 *TCX MATCH*\n\n"
+            "Send a HEX color.\n\n"
+            "Example:\n"
+            "`#C6233A`",
+            parse_mode="Markdown",
+        )
+
+    elif data == "card":
+        context.user_data["mode"] = "card"
+
+        await query.message.reply_text(
+            "🖼 Send an image and I'll generate a color card."
+        )
+
+    elif data == "history":
+        rows = get_history(
+            query.from_user.id
+        )
+
+        if not rows:
+            await query.message.reply_text(
+                "📜 No match history yet."
+            )
+            return
+
+        text = "📜 *YOUR MATCH HISTORY*\n\n"
+
+        for row in rows:
+            (
+                input_type,
+                input_value,
+                pantone_name,
+                rgb,
+                created_at,
+            ) = row
+
+            text += (
+                f"• `{input_value}` → "
+                f"*{pantone_name}*\n"
+                f"  {created_at}\n\n"
+            )
+
+        await query.message.reply_text(
+            text,
+            parse_mode="Markdown",
+        )
+
+    elif data == "settings":
+        await query.message.reply_text(
+            "⚙️ *SETTINGS*\n\n"
+            "Color matching: Lab distance\n"
+            "Image extraction: Dominant colors\n"
+            "Palette: Local dataset",
+            parse_mode="Markdown",
+        )
+
+    elif data == "help":
+        await query.message.reply_text(
+            "❓ *HOW TO USE MODEX PANTONE*\n\n"
+            "Send:\n"
+            "• A HEX color\n"
+            "• RGB values\n"
+            "• An image\n\n"
+            "Commands:\n"
+            "`/hex`\n"
+            "`/rgb`\n"
+            "`/image`\n"
+            "`/tcx`\n"
+            "`/card`\n"
+            "`/history`\n"
+            "`/help`",
+            parse_mode="Markdown",
+        )
+
+
+# ============================================================
+# ERROR HANDLER
+# ============================================================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    print(
+        "Telegram error:",
+        context.error,
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
-    token = os.getenv("BOT_TOKEN")
-    if not token:
-        raise RuntimeError("Set BOT_TOKEN in your environment.")
-    app = Application.builder().token(token).post_init(set_commands).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("settings", settings))
-    app.add_handler(CommandHandler("hex", cmd_hex))
-    app.add_handler(CommandHandler("image", cmd_image))
-    app.add_handler(CommandHandler("rgb", cmd_rgb))
-    app.add_handler(CommandHandler("cmyk", cmd_cmyk))
-    app.add_handler(CommandHandler("tcx", cmd_tcx))
-    app.add_handler(CommandHandler("card", cmd_card))
-    app.add_handler(CommandHandler("history", history_command))
-    app.add_handler(CallbackQueryHandler(on_button_home, pattern="^home$"))
-    app.add_handler(CallbackQueryHandler(button))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    print("modexpantonebot is running...")
-    app.run_polling()
+    init_db()
+
+    # Start Render HTTP server
+    threading.Thread(
+        target=run_web_server,
+        daemon=True,
+    ).start()
+
+    print("MODEX PANTONE is starting...")
+    print("Render web server started.")
+    print("Telegram bot is running...")
+
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(set_commands)
+        .build()
+    )
+
+    # Commands
+    application.add_handler(
+        CommandHandler("start", start)
+    )
+
+    application.add_handler(
+        CommandHandler("help", help_command)
+    )
+
+    application.add_handler(
+        CommandHandler("settings", settings_command)
+    )
+
+    application.add_handler(
+        CommandHandler("hex", hex_command)
+    )
+
+    application.add_handler(
+        CommandHandler("rgb", rgb_command)
+    )
+
+    application.add_handler(
+        CommandHandler("cmyk", cmyk_command)
+    )
+
+    application.add_handler(
+        CommandHandler("image", image_command)
+    )
+
+    application.add_handler(
+        CommandHandler("tcx", tcx_command)
+    )
+
+    application.add_handler(
+        CommandHandler("card", card_command)
+    )
+
+    application.add_handler(
+        CommandHandler("history", history_command)
+    )
+
+    # Buttons
+    application.add_handler(
+        CallbackQueryHandler(button_handler)
+    )
+
+    # Photos
+    application.add_handler(
+        MessageHandler(
+            filters.PHOTO,
+            handle_photo,
+        )
+    )
+
+    # Text
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_text,
+        )
+    )
+
+    # Errors
+    application.add_error_handler(
+        error_handler
+    )
+
+    # Start Telegram polling
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES
+    )
+
 
 if __name__ == "__main__":
     main()
