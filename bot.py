@@ -2,6 +2,7 @@ import os
 import io
 import sqlite3
 import threading
+import traceback
 from pathlib import Path
 
 from flask import Flask
@@ -25,7 +26,6 @@ from telegram.ext import (
 from color_utils import (
     extract_dominant_colors,
     hex_to_rgb,
-    rgb_to_hex,
     nearest_matches,
     make_color_tile,
     make_color_card,
@@ -38,6 +38,7 @@ from color_utils import (
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
+
 DB_PATH = BASE_DIR / "history.db"
 PALETTE_PATH = BASE_DIR / "pantone_colors.csv"
 
@@ -48,10 +49,24 @@ if not BOT_TOKEN:
 
 
 # ============================================================
-# PALETTE
+# LOAD PALETTE
 # ============================================================
 
-PALETTE = load_palette(PALETTE_PATH)
+print("🎨 Loading Pantone palette...", flush=True)
+
+try:
+    PALETTE = load_palette(PALETTE_PATH)
+    print(
+        f"✅ Palette loaded: {len(PALETTE)} colors",
+        flush=True
+    )
+except Exception as e:
+    print(
+        f"❌ Palette loading failed: {e}",
+        flush=True
+    )
+    traceback.print_exc()
+    raise
 
 
 # ============================================================
@@ -75,6 +90,8 @@ def init_db():
 
     conn.commit()
     conn.close()
+
+    print("✅ Database initialized", flush=True)
 
 
 def save_history(
@@ -144,6 +161,11 @@ def health():
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
 
+    print(
+        f"🌐 Starting Render web server on port {port}",
+        flush=True
+    )
+
     web_app.run(
         host="0.0.0.0",
         port=port,
@@ -156,7 +178,7 @@ def run_web_server():
 # TELEGRAM COMMAND MENU
 # ============================================================
 
-async def set_commands(app):
+async def set_commands(application):
     commands = [
         BotCommand("start", "Bot main menu"),
         BotCommand("settings", "Bot settings"),
@@ -170,7 +192,9 @@ async def set_commands(app):
         BotCommand("help", "How to use"),
     ]
 
-    await app.bot.set_my_commands(commands)
+    await application.bot.set_my_commands(commands)
+
+    print("✅ Telegram command menu configured", flush=True)
 
 
 # ============================================================
@@ -178,45 +202,46 @@ async def set_commands(app):
 # ============================================================
 
 def main_menu():
+
     keyboard = [
         [
             InlineKeyboardButton(
                 "🎨 Image → Pantone",
-                callback_data="image",
+                callback_data="image"
             ),
             InlineKeyboardButton(
                 "🔢 HEX → Pantone",
-                callback_data="hex",
+                callback_data="hex"
             ),
         ],
         [
             InlineKeyboardButton(
                 "🌈 RGB → Pantone",
-                callback_data="rgb",
+                callback_data="rgb"
             ),
             InlineKeyboardButton(
                 "👕 TCX Match",
-                callback_data="tcx",
+                callback_data="tcx"
             ),
         ],
         [
             InlineKeyboardButton(
                 "🖼 Color Card",
-                callback_data="card",
+                callback_data="card"
             ),
             InlineKeyboardButton(
                 "📜 History",
-                callback_data="history",
+                callback_data="history"
             ),
         ],
         [
             InlineKeyboardButton(
                 "⚙️ Settings",
-                callback_data="settings",
+                callback_data="settings"
             ),
             InlineKeyboardButton(
                 "❓ Help",
-                callback_data="help",
+                callback_data="help"
             ),
         ],
     ]
@@ -228,7 +253,16 @@ def main_menu():
 # /START
 # ============================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    print(
+        f"👤 /start from {update.effective_user.id}",
+        flush=True
+    )
+
     await update.message.reply_text(
         "🎨 *MODEX PANTONE*\n\n"
         "Match colors to the closest Pantone reference.\n\n"
@@ -242,17 +276,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /HELP
 # ============================================================
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     await update.message.reply_text(
         "🎨 *MODEX PANTONE — HOW TO USE*\n\n"
         "• `/hex` — Match a HEX color\n"
         "• `/rgb` — Match an RGB color\n"
         "• `/image` — Match colors from an image\n"
-        "• `/tcx` — Search the TCX palette\n"
+        "• `/tcx` — Search TCX colors\n"
         "• `/card` — Generate a color card\n"
         "• `/history` — View previous matches\n"
         "• `/settings` — Bot settings\n\n"
-        "You can also simply send me an image.",
+        "You can also simply send an image.",
         parse_mode="Markdown",
         reply_markup=main_menu(),
     )
@@ -264,15 +302,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def settings_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
+
     await update.message.reply_text(
-        "⚙️ *MODEX PANTONE SETTINGS*\n\n"
-        "Current mode:\n"
-        "• Color matching: Lab distance\n"
-        "• Palette: Local Pantone dataset\n"
-        "• Image extraction: Dominant colors\n\n"
-        "More settings can be added later.",
+        "⚙️ *SETTINGS*\n\n"
+        "Color matching: Lab distance\n"
+        "Image extraction: Dominant colors\n"
+        "Palette: Local dataset",
         parse_mode="Markdown",
         reply_markup=main_menu(),
     )
@@ -284,22 +321,28 @@ async def settings_command(
 
 async def hex_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
+
+    context.user_data["mode"] = "hex"
+
     if context.args:
+
         value = context.args[0]
+
         await process_hex(
             update,
             context,
             value,
-            "HEX",
         )
+
         return
 
     await update.message.reply_text(
-        "🔢 Send a HEX color.\n\n"
+        "🔢 *HEX → Pantone*\n\n"
+        "Send a HEX color.\n\n"
         "Example:\n"
-        "`/hex #FF0000`",
+        "`#FF0000`",
         parse_mode="Markdown",
     )
 
@@ -310,9 +353,13 @@ async def hex_command(
 
 async def rgb_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
+
+    context.user_data["mode"] = "rgb"
+
     if context.args:
+
         value = " ".join(context.args)
 
         await process_rgb(
@@ -320,12 +367,14 @@ async def rgb_command(
             context,
             value,
         )
+
         return
 
     await update.message.reply_text(
-        "🌈 Send RGB values.\n\n"
+        "🌈 *RGB → Pantone*\n\n"
+        "Send RGB values.\n\n"
         "Example:\n"
-        "`/rgb 255 0 0`",
+        "`255 0 0`",
         parse_mode="Markdown",
     )
 
@@ -336,11 +385,12 @@ async def rgb_command(
 
 async def cmyk_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
+
     await update.message.reply_text(
         "🖨 *CMYK → Pantone*\n\n"
-        "CMYK matching is not enabled in this MVP yet.\n\n"
+        "CMYK matching is not enabled yet.\n\n"
         "Use `/hex` or `/rgb` for now.",
         parse_mode="Markdown",
     )
@@ -352,13 +402,19 @@ async def cmyk_command(
 
 async def image_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
+
     context.user_data["mode"] = "image"
 
+    print(
+        f"🖼 /image requested by {update.effective_user.id}",
+        flush=True
+    )
+
     await update.message.reply_text(
-        "🎨 Send me an image and I'll extract its dominant colors "
-        "and find the closest Pantone references."
+        "🎨 Send me an image and I'll extract its "
+        "dominant colors and find the closest Pantone references."
     )
 
 
@@ -368,8 +424,9 @@ async def image_command(
 
 async def tcx_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
+
     context.user_data["mode"] = "tcx"
 
     await update.message.reply_text(
@@ -387,14 +444,15 @@ async def tcx_command(
 
 async def card_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
+
     context.user_data["mode"] = "card"
 
     await update.message.reply_text(
         "🖼 *COLOR CARD*\n\n"
-        "Send an image and I'll generate a Pantone-style "
-        "color card from the dominant colors.",
+        "Send an image and I'll generate a color card "
+        "from its dominant colors.",
         parse_mode="Markdown",
     )
 
@@ -405,23 +463,36 @@ async def card_command(
 
 async def history_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
-    rows = get_history(update.effective_user.id)
+
+    rows = get_history(
+        update.effective_user.id
+    )
 
     if not rows:
+
         await update.message.reply_text(
             "📜 You don't have any match history yet."
         )
+
         return
 
     text = "📜 *YOUR MATCH HISTORY*\n\n"
 
     for row in rows:
-        input_type, input_value, pantone_name, rgb, created_at = row
+
+        (
+            input_type,
+            input_value,
+            pantone_name,
+            rgb,
+            created_at,
+        ) = row
 
         text += (
-            f"• `{input_value}` → *{pantone_name}*\n"
+            f"• `{input_value}` → "
+            f"*{pantone_name}*\n"
             f"  {created_at}\n\n"
         )
 
@@ -439,17 +510,31 @@ async def process_hex(
     update,
     context,
     value,
-    input_type="HEX",
 ):
+
+    print(
+        f"🔢 Processing HEX: {value}",
+        flush=True
+    )
+
     try:
+
         rgb = hex_to_rgb(value)
-    except Exception:
+
+    except Exception as e:
+
+        print(
+            f"❌ HEX ERROR: {e}",
+            flush=True
+        )
+
         await update.message.reply_text(
             "❌ Invalid HEX color.\n\n"
             "Example:\n"
             "`#FF0000`",
             parse_mode="Markdown",
         )
+
         return
 
     collection = None
@@ -457,22 +542,42 @@ async def process_hex(
     if context.user_data.get("mode") == "tcx":
         collection = "TCX"
 
-    matches = nearest_matches(
-        rgb,
-        PALETTE,
-        n=3,
-        collection=collection,
-    )
+    try:
+
+        matches = nearest_matches(
+            rgb,
+            PALETTE,
+            n=3,
+            collection=collection,
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ MATCHING ERROR: {e}",
+            flush=True
+        )
+
+        traceback.print_exc()
+
+        await update.message.reply_text(
+            "❌ Error matching this color."
+        )
+
+        return
 
     if not matches:
+
         await update.message.reply_text(
             "❌ No matching colors found."
         )
+
         return
 
     best = matches[0]
 
     pantone_name = best["name"]
+
     pantone_rgb = (
         best["r"],
         best["g"],
@@ -481,42 +586,66 @@ async def process_hex(
 
     save_history(
         update.effective_user.id,
-        input_type,
+        "HEX",
         value,
         pantone_name,
         pantone_rgb,
     )
 
-    response = (
-        f"🎨 *COLOR MATCH*\n\n"
+    text = (
+        "🎨 *COLOR MATCH*\n\n"
         f"Input: `{value}`\n"
         f"RGB: `{rgb}`\n\n"
-        f"🏆 *Closest Match*\n"
+        "🏆 *Closest Match*\n"
         f"*{pantone_name}*\n"
         f"RGB: `{pantone_rgb}`\n\n"
-        f"Other close matches:\n"
+        "Other close matches:\n"
     )
 
     for match in matches[1:]:
-        response += (
+
+        text += (
             f"• {match['name']} — "
-            f"RGB {match['r']}, {match['g']}, {match['b']}\n"
+            f"RGB {match['r']}, "
+            f"{match['g']}, "
+            f"{match['b']}\n"
         )
 
-    tile = make_color_tile(
-        pantone_name,
-        pantone_rgb,
-    )
+    try:
 
-    output = io.BytesIO()
-    tile.save(output, format="PNG")
-    output.seek(0)
+        tile = make_color_tile(
+            pantone_name,
+            pantone_rgb,
+        )
 
-    await update.message.reply_photo(
-        photo=output,
-        caption=response,
-        parse_mode="Markdown",
-    )
+        output = io.BytesIO()
+
+        tile.save(
+            output,
+            format="PNG"
+        )
+
+        output.seek(0)
+
+        await update.message.reply_photo(
+            photo=output,
+            caption=text,
+            parse_mode="Markdown",
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ TILE ERROR: {e}",
+            flush=True
+        )
+
+        traceback.print_exc()
+
+        await update.message.reply_text(
+            text,
+            parse_mode="Markdown",
+        )
 
 
 # ============================================================
@@ -528,9 +657,17 @@ async def process_rgb(
     context,
     value,
 ):
+
+    print(
+        f"🌈 Processing RGB: {value}",
+        flush=True
+    )
+
     try:
+
         cleaned = (
-            value.replace(",", " ")
+            value
+            .replace(",", " ")
             .replace("(", " ")
             .replace(")", " ")
         )
@@ -545,28 +682,52 @@ async def process_rgb(
             for x in parts
         )
 
-        if any(x < 0 or x > 255 for x in rgb):
+        if any(
+            x < 0 or x > 255
+            for x in rgb
+        ):
             raise ValueError
 
     except Exception:
+
         await update.message.reply_text(
             "❌ Invalid RGB value.\n\n"
             "Example:\n"
             "`/rgb 255 0 0`",
             parse_mode="Markdown",
         )
+
         return
 
-    matches = nearest_matches(
-        rgb,
-        PALETTE,
-        n=3,
-    )
+    try:
+
+        matches = nearest_matches(
+            rgb,
+            PALETTE,
+            n=3,
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ RGB MATCH ERROR: {e}",
+            flush=True
+        )
+
+        traceback.print_exc()
+
+        await update.message.reply_text(
+            "❌ Error matching this color."
+        )
+
+        return
 
     if not matches:
+
         await update.message.reply_text(
             "❌ No matching colors found."
         )
+
         return
 
     best = matches[0]
@@ -587,37 +748,57 @@ async def process_rgb(
         pantone_rgb,
     )
 
-    response = (
-        f"🌈 *RGB MATCH*\n\n"
+    text = (
+        "🌈 *RGB MATCH*\n\n"
         f"Input: `{rgb}`\n\n"
-        f"🏆 *Closest Match*\n"
+        "🏆 *Closest Match*\n"
         f"*{pantone_name}*\n"
         f"RGB: `{pantone_rgb}`\n\n"
-        f"Other close matches:\n"
+        "Other close matches:\n"
     )
 
     for match in matches[1:]:
-        response += (
+
+        text += (
             f"• {match['name']} — "
             f"RGB {match['r']}, "
             f"{match['g']}, "
             f"{match['b']}\n"
         )
 
-    tile = make_color_tile(
-        pantone_name,
-        pantone_rgb,
-    )
+    try:
 
-    output = io.BytesIO()
-    tile.save(output, format="PNG")
-    output.seek(0)
+        tile = make_color_tile(
+            pantone_name,
+            pantone_rgb,
+        )
 
-    await update.message.reply_photo(
-        photo=output,
-        caption=response,
-        parse_mode="Markdown",
-    )
+        output = io.BytesIO()
+
+        tile.save(
+            output,
+            format="PNG"
+        )
+
+        output.seek(0)
+
+        await update.message.reply_photo(
+            photo=output,
+            caption=text,
+            parse_mode="Markdown",
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ RGB TILE ERROR: {e}",
+            flush=True
+        )
+
+        await update.message.reply_text(
+            text,
+            parse_mode="Markdown",
+        )
 
 
 # ============================================================
@@ -628,125 +809,420 @@ async def handle_photo(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    if not update.message or not update.message.photo:
-        return
 
-    photo = update.message.photo[-1]
-
-    file = await context.bot.get_file(
-        photo.file_id
+    print(
+        "📸 =============================",
+        flush=True
     )
 
-    image_bytes = await file.download_as_bytearray()
-
-    image = Image.open(
-        io.BytesIO(image_bytes)
-    ).convert("RGB")
-
-    colors = extract_dominant_colors(
-        image,
-        n=5,
+    print(
+        "📸 PHOTO RECEIVED",
+        flush=True
     )
 
-    mode = context.user_data.get(
-        "mode",
-        "image",
+    print(
+        "📸 =============================",
+        flush=True
     )
 
-    if mode == "card":
-        matches_for_card = []
+    try:
+
+        if not update.message:
+
+            print(
+                "❌ No message object",
+                flush=True
+            )
+
+            return
+
+        if not update.message.photo:
+
+            print(
+                "❌ No photo object",
+                flush=True
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Tell user processing has started
+        # ----------------------------------------------------
+
+        processing_message = await update.message.reply_text(
+            "⏳ Processing your image..."
+        )
+
+        print(
+            "✅ Processing message sent",
+            flush=True
+        )
+
+        # ----------------------------------------------------
+        # Get Telegram photo
+        # ----------------------------------------------------
+
+        photo = update.message.photo[-1]
+
+        print(
+            f"📸 Telegram file ID: {photo.file_id}",
+            flush=True
+        )
+
+        print(
+            f"📸 Telegram dimensions: "
+            f"{photo.width}x{photo.height}",
+            flush=True
+        )
+
+        # ----------------------------------------------------
+        # Download
+        # ----------------------------------------------------
+
+        print(
+            "📥 Getting Telegram file...",
+            flush=True
+        )
+
+        telegram_file = await context.bot.get_file(
+            photo.file_id
+        )
+
+        print(
+            "✅ Telegram file obtained",
+            flush=True
+        )
+
+        print(
+            "📥 Downloading image...",
+            flush=True
+        )
+
+        image_bytes = await telegram_file.download_as_bytearray()
+
+        print(
+            f"✅ Downloaded {len(image_bytes)} bytes",
+            flush=True
+        )
+
+        # ----------------------------------------------------
+        # Open image
+        # ----------------------------------------------------
+
+        print(
+            "🖼 Opening image with Pillow...",
+            flush=True
+        )
+
+        image = Image.open(
+            io.BytesIO(image_bytes)
+        )
+
+        print(
+            f"🖼 Format: {image.format}",
+            flush=True
+        )
+
+        print(
+            f"🖼 Mode: {image.mode}",
+            flush=True
+        )
+
+        print(
+            f"🖼 Size: {image.size}",
+            flush=True
+        )
+
+        image = image.convert("RGB")
+
+        print(
+            "✅ Image converted to RGB",
+            flush=True
+        )
+
+        # ----------------------------------------------------
+        # Extract dominant colors
+        # ----------------------------------------------------
+
+        print(
+            "🎨 Extracting dominant colors...",
+            flush=True
+        )
+
+        colors = extract_dominant_colors(
+            image,
+            n=5,
+        )
+
+        print(
+            f"✅ Dominant colors: {colors}",
+            flush=True
+        )
+
+        if not colors:
+
+            print(
+                "❌ No colors extracted",
+                flush=True
+            )
+
+            await processing_message.edit_text(
+                "❌ I couldn't extract colors from this image."
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Determine mode
+        # ----------------------------------------------------
+
+        mode = context.user_data.get(
+            "mode",
+            "image",
+        )
+
+        print(
+            f"🔧 Current mode: {mode}",
+            flush=True
+        )
+
+        # ====================================================
+        # COLOR CARD
+        # ====================================================
+
+        if mode == "card":
+
+            print(
+                "🖼 Generating color card...",
+                flush=True
+            )
+
+            matches_for_card = []
+
+            for rgb in colors:
+
+                print(
+                    f"🔍 Matching RGB {rgb}",
+                    flush=True
+                )
+
+                matches = nearest_matches(
+                    rgb,
+                    PALETTE,
+                    n=1,
+                )
+
+                if matches:
+
+                    match = matches[0]
+
+                    matches_for_card.append(
+                        (
+                            match["name"],
+                            (
+                                match["r"],
+                                match["g"],
+                                match["b"],
+                            ),
+                        )
+                    )
+
+            print(
+                f"✅ Card matches: {len(matches_for_card)}",
+                flush=True
+            )
+
+            if not matches_for_card:
+
+                await processing_message.edit_text(
+                    "❌ Couldn't find Pantone matches."
+                )
+
+                return
+
+            print(
+                "🖼 Creating card image...",
+                flush=True
+            )
+
+            card = make_color_card(
+                matches_for_card
+            )
+
+            output = io.BytesIO()
+
+            card.save(
+                output,
+                format="PNG"
+            )
+
+            output.seek(0)
+
+            print(
+                "📤 Sending color card...",
+                flush=True
+            )
+
+            await update.message.reply_photo(
+                photo=output,
+                caption="🖼 *MODEX PANTONE COLOR CARD*",
+                parse_mode="Markdown",
+            )
+
+            await processing_message.delete()
+
+            print(
+                "✅ COLOR CARD COMPLETE",
+                flush=True
+            )
+
+            context.user_data.pop(
+                "mode",
+                None,
+            )
+
+            return
+
+        # ====================================================
+        # NORMAL IMAGE → PANTONE
+        # ====================================================
+
+        results = []
 
         for rgb in colors:
+
+            print(
+                f"🔍 Matching color: {rgb}",
+                flush=True
+            )
+
+            collection = None
+
+            if mode == "tcx":
+                collection = "TCX"
+
             matches = nearest_matches(
                 rgb,
                 PALETTE,
                 n=1,
+                collection=collection,
             )
 
             if matches:
-                matches_for_card.append(
+
+                results.append(
                     (
-                        matches[0]["name"],
-                        (
-                            matches[0]["r"],
-                            matches[0]["g"],
-                            matches[0]["b"],
-                        ),
+                        rgb,
+                        matches[0],
                     )
                 )
 
-        card = make_color_card(
-            matches_for_card
+        print(
+            f"✅ Total matches: {len(results)}",
+            flush=True
         )
 
-        output = io.BytesIO()
-        card.save(output, format="PNG")
-        output.seek(0)
+        if not results:
 
-        await update.message.reply_photo(
-            photo=output,
-            caption="🖼 *MODEX PANTONE COLOR CARD*",
+            await processing_message.edit_text(
+                "❌ I couldn't find any Pantone matches."
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Build response
+        # ----------------------------------------------------
+
+        text = "🎨 *IMAGE → PANTONE*\n\n"
+
+        for rgb, match in results:
+
+            pantone_rgb = (
+                match["r"],
+                match["g"],
+                match["b"],
+            )
+
+            print(
+                f"🎯 {rgb} → {match['name']}",
+                flush=True
+            )
+
+            save_history(
+                update.effective_user.id,
+                "IMAGE",
+                str(rgb),
+                match["name"],
+                pantone_rgb,
+            )
+
+            text += (
+                f"🎨 RGB `{rgb}`\n"
+                f"→ *{match['name']}*\n"
+                f"Pantone RGB `{pantone_rgb}`\n\n"
+            )
+
+        # ----------------------------------------------------
+        # Send result
+        # ----------------------------------------------------
+
+        print(
+            "📤 Sending Pantone results...",
+            flush=True
+        )
+
+        await processing_message.edit_text(
+            text,
             parse_mode="Markdown",
         )
 
-        return
-
-    results = []
-
-    for rgb in colors:
-        collection = None
-
-        if mode == "tcx":
-            collection = "TCX"
-
-        matches = nearest_matches(
-            rgb,
-            PALETTE,
-            n=1,
-            collection=collection,
+        print(
+            "✅ IMAGE PROCESSING COMPLETE",
+            flush=True
         )
 
-        if matches:
-            results.append(
-                (
-                    rgb,
-                    matches[0],
-                )
+        context.user_data.pop(
+            "mode",
+            None,
+        )
+
+    except Exception as e:
+
+        print(
+            "❌ =============================",
+            flush=True
+        )
+
+        print(
+            f"❌ PHOTO PROCESSING ERROR: "
+            f"{type(e).__name__}: {e}",
+            flush=True
+        )
+
+        print(
+            "❌ =============================",
+            flush=True
+        )
+
+        traceback.print_exc()
+
+        try:
+
+            await update.message.reply_text(
+                "❌ Something went wrong while processing "
+                "the image.\n\n"
+                f"Error: `{type(e).__name__}: {e}`",
+                parse_mode="Markdown",
             )
 
-    if not results:
-        await update.message.reply_text(
-            "❌ Couldn't find matching colors."
-        )
-        return
+        except Exception as send_error:
 
-    text = "🎨 *IMAGE → PANTONE*\n\n"
-
-    for rgb, match in results:
-        pantone_rgb = (
-            match["r"],
-            match["g"],
-            match["b"],
-        )
-
-        save_history(
-            update.effective_user.id,
-            "IMAGE",
-            str(rgb),
-            match["name"],
-            pantone_rgb,
-        )
-
-        text += (
-            f"RGB `{rgb}`\n"
-            f"→ *{match['name']}*\n"
-            f"Pantone RGB `{pantone_rgb}`\n\n"
-        )
-
-    await update.message.reply_text(
-        text,
-        parse_mode="Markdown",
-    )
+            print(
+                f"❌ Could not send error message: "
+                f"{send_error}",
+                flush=True
+            )
 
 
 # ============================================================
@@ -757,19 +1233,28 @@ async def handle_text(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     text = update.message.text.strip()
 
     mode = context.user_data.get(
         "mode"
     )
 
-    # TCX / HEX mode
+    print(
+        f"💬 TEXT RECEIVED: {text}",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # TCX
+    # --------------------------------------------------------
+
     if mode == "tcx":
+
         await process_hex(
             update,
             context,
             text,
-            "TCX",
         )
 
         context.user_data.pop(
@@ -779,14 +1264,60 @@ async def handle_text(
 
         return
 
-    # Card mode
+    # --------------------------------------------------------
+    # HEX
+    # --------------------------------------------------------
+
+    if mode == "hex":
+
+        await process_hex(
+            update,
+            context,
+            text,
+        )
+
+        context.user_data.pop(
+            "mode",
+            None,
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # RGB
+    # --------------------------------------------------------
+
+    if mode == "rgb":
+
+        await process_rgb(
+            update,
+            context,
+            text,
+        )
+
+        context.user_data.pop(
+            "mode",
+            None,
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # CARD
+    # --------------------------------------------------------
+
     if mode == "card":
+
         await update.message.reply_text(
             "🖼 Please send an image for the color card."
         )
+
         return
 
-    # Automatic HEX detection
+    # --------------------------------------------------------
+    # Automatic HEX
+    # --------------------------------------------------------
+
     if text.startswith("#") or (
         len(text) in (6, 7)
         and all(
@@ -794,35 +1325,44 @@ async def handle_text(
             for c in text.lstrip("#")
         )
     ):
+
         await process_hex(
             update,
             context,
             text,
-            "HEX",
         )
 
         return
 
-    # Automatic RGB detection
+    # --------------------------------------------------------
+    # Automatic RGB
+    # --------------------------------------------------------
+
     parts = (
-        text.replace(",", " ")
+        text
+        .replace(",", " ")
         .replace("(", " ")
         .replace(")", " ")
         .split()
     )
 
     if len(parts) == 3:
+
         try:
+
             if all(
                 0 <= int(x) <= 255
                 for x in parts
             ):
+
                 await process_rgb(
                     update,
                     context,
                     text,
                 )
+
                 return
+
         except ValueError:
             pass
 
@@ -845,13 +1385,24 @@ async def button_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     query = update.callback_query
 
     await query.answer()
 
     data = query.data
 
+    print(
+        f"🔘 BUTTON: {data}",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # IMAGE
+    # --------------------------------------------------------
+
     if data == "image":
+
         context.user_data["mode"] = "image"
 
         await query.message.reply_text(
@@ -859,7 +1410,12 @@ async def button_handler(
             "dominant colors to Pantone."
         )
 
+    # --------------------------------------------------------
+    # HEX
+    # --------------------------------------------------------
+
     elif data == "hex":
+
         context.user_data["mode"] = "hex"
 
         await query.message.reply_text(
@@ -869,7 +1425,12 @@ async def button_handler(
             parse_mode="Markdown",
         )
 
+    # --------------------------------------------------------
+    # RGB
+    # --------------------------------------------------------
+
     elif data == "rgb":
+
         context.user_data["mode"] = "rgb"
 
         await query.message.reply_text(
@@ -879,7 +1440,12 @@ async def button_handler(
             parse_mode="Markdown",
         )
 
+    # --------------------------------------------------------
+    # TCX
+    # --------------------------------------------------------
+
     elif data == "tcx":
+
         context.user_data["mode"] = "tcx"
 
         await query.message.reply_text(
@@ -890,27 +1456,40 @@ async def button_handler(
             parse_mode="Markdown",
         )
 
+    # --------------------------------------------------------
+    # CARD
+    # --------------------------------------------------------
+
     elif data == "card":
+
         context.user_data["mode"] = "card"
 
         await query.message.reply_text(
             "🖼 Send an image and I'll generate a color card."
         )
 
+    # --------------------------------------------------------
+    # HISTORY
+    # --------------------------------------------------------
+
     elif data == "history":
+
         rows = get_history(
             query.from_user.id
         )
 
         if not rows:
+
             await query.message.reply_text(
                 "📜 No match history yet."
             )
+
             return
 
         text = "📜 *YOUR MATCH HISTORY*\n\n"
 
         for row in rows:
+
             (
                 input_type,
                 input_value,
@@ -930,7 +1509,12 @@ async def button_handler(
             parse_mode="Markdown",
         )
 
+    # --------------------------------------------------------
+    # SETTINGS
+    # --------------------------------------------------------
+
     elif data == "settings":
+
         await query.message.reply_text(
             "⚙️ *SETTINGS*\n\n"
             "Color matching: Lab distance\n"
@@ -939,7 +1523,12 @@ async def button_handler(
             parse_mode="Markdown",
         )
 
+    # --------------------------------------------------------
+    # HELP
+    # --------------------------------------------------------
+
     elif data == "help":
+
         await query.message.reply_text(
             "❓ *HOW TO USE MODEX PANTONE*\n\n"
             "Send:\n"
@@ -966,9 +1555,22 @@ async def error_handler(
     update: object,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     print(
-        "Telegram error:",
+        "❌ TELEGRAM ERROR",
+        flush=True
+    )
+
+    print(
+        f"❌ {type(context.error).__name__}: "
+        f"{context.error}",
+        flush=True
+    )
+
+    traceback.print_exception(
+        type(context.error),
         context.error,
+        context.error.__traceback__,
     )
 
 
@@ -977,18 +1579,39 @@ async def error_handler(
 # ============================================================
 
 def main():
+
+    print(
+        "========================================",
+        flush=True
+    )
+
+    print(
+        "🚀 MODEX PANTONE STARTING",
+        flush=True
+    )
+
+    print(
+        "========================================",
+        flush=True
+    )
+
+    # Database
     init_db()
 
-    # Start Render HTTP server
-    threading.Thread(
+    # Render HTTP server
+    web_thread = threading.Thread(
         target=run_web_server,
         daemon=True,
-    ).start()
+    )
 
-    print("MODEX PANTONE is starting...")
-    print("Render web server started.")
-    print("Telegram bot is running...")
+    web_thread.start()
 
+    print(
+        "✅ Render web server started.",
+        flush=True
+    )
+
+    # Telegram application
     application = (
         Application.builder()
         .token(BOT_TOKEN)
@@ -996,53 +1619,94 @@ def main():
         .build()
     )
 
-    # Commands
+    # --------------------------------------------------------
+    # COMMANDS
+    # --------------------------------------------------------
+
     application.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start,
+        )
     )
 
     application.add_handler(
-        CommandHandler("help", help_command)
+        CommandHandler(
+            "help",
+            help_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("settings", settings_command)
+        CommandHandler(
+            "settings",
+            settings_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("hex", hex_command)
+        CommandHandler(
+            "hex",
+            hex_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("rgb", rgb_command)
+        CommandHandler(
+            "rgb",
+            rgb_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("cmyk", cmyk_command)
+        CommandHandler(
+            "cmyk",
+            cmyk_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("image", image_command)
+        CommandHandler(
+            "image",
+            image_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("tcx", tcx_command)
+        CommandHandler(
+            "tcx",
+            tcx_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("card", card_command)
+        CommandHandler(
+            "card",
+            card_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("history", history_command)
+        CommandHandler(
+            "history",
+            history_command,
+        )
     )
 
-    # Buttons
+    # --------------------------------------------------------
+    # BUTTONS
+    # --------------------------------------------------------
+
     application.add_handler(
-        CallbackQueryHandler(button_handler)
+        CallbackQueryHandler(
+            button_handler
+        )
     )
 
-    # Photos
+    # --------------------------------------------------------
+    # PHOTOS
+    # --------------------------------------------------------
+
     application.add_handler(
         MessageHandler(
             filters.PHOTO,
@@ -1050,7 +1714,10 @@ def main():
         )
     )
 
-    # Text
+    # --------------------------------------------------------
+    # TEXT
+    # --------------------------------------------------------
+
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -1058,16 +1725,46 @@ def main():
         )
     )
 
-    # Errors
+    # --------------------------------------------------------
+    # ERRORS
+    # --------------------------------------------------------
+
     application.add_error_handler(
         error_handler
     )
 
-    # Start Telegram polling
+    print(
+        "🤖 Telegram bot is running...",
+        flush=True
+    )
+
+    print(
+        "📸 Photo handler registered.",
+        flush=True
+    )
+
+    print(
+        "💬 Text handler registered.",
+        flush=True
+    )
+
+    print(
+        "========================================",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # START POLLING
+    # --------------------------------------------------------
+
     application.run_polling(
         allowed_updates=Update.ALL_TYPES
     )
 
+
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == "__main__":
     main()
