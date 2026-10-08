@@ -56,15 +56,18 @@ print("🎨 Loading Pantone palette...", flush=True)
 
 try:
     PALETTE = load_palette(PALETTE_PATH)
+
     print(
         f"✅ Palette loaded: {len(PALETTE)} colors",
         flush=True
     )
+
 except Exception as e:
     print(
         f"❌ Palette loading failed: {e}",
         flush=True
     )
+
     traceback.print_exc()
     raise
 
@@ -74,6 +77,7 @@ except Exception as e:
 # ============================================================
 
 def init_db():
+
     conn = sqlite3.connect(DB_PATH)
 
     conn.execute("""
@@ -91,7 +95,10 @@ def init_db():
     conn.commit()
     conn.close()
 
-    print("✅ Database initialized", flush=True)
+    print(
+        "✅ Database initialized",
+        flush=True
+    )
 
 
 def save_history(
@@ -101,6 +108,7 @@ def save_history(
     pantone_name,
     rgb
 ):
+
     conn = sqlite3.connect(DB_PATH)
 
     conn.execute(
@@ -123,6 +131,7 @@ def save_history(
 
 
 def get_history(user_id, limit=10):
+
     conn = sqlite3.connect(DB_PATH)
 
     rows = conn.execute(
@@ -133,7 +142,10 @@ def get_history(user_id, limit=10):
         ORDER BY id DESC
         LIMIT ?
         """,
-        (user_id, limit),
+        (
+            user_id,
+            limit,
+        ),
     ).fetchall()
 
     conn.close()
@@ -150,16 +162,24 @@ web_app = Flask(__name__)
 
 @web_app.route("/")
 def home():
+
     return "MODEX PANTONE BOT IS ONLINE", 200
 
 
 @web_app.route("/health")
 def health():
+
     return "OK", 200
 
 
 def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            10000
+        )
+    )
 
     print(
         f"🌐 Starting Render web server on port {port}",
@@ -179,22 +199,68 @@ def run_web_server():
 # ============================================================
 
 async def set_commands(application):
+
     commands = [
-        BotCommand("start", "Bot main menu"),
-        BotCommand("settings", "Bot settings"),
-        BotCommand("hex", "HEX → Pantone"),
-        BotCommand("image", "Image → Pantone"),
-        BotCommand("rgb", "RGB → Pantone"),
-        BotCommand("cmyk", "CMYK → Pantone"),
-        BotCommand("tcx", "TCX match"),
-        BotCommand("card", "Generate color card"),
-        BotCommand("history", "Match history"),
-        BotCommand("help", "How to use"),
+
+        BotCommand(
+            "start",
+            "Bot main menu"
+        ),
+
+        BotCommand(
+            "settings",
+            "Bot settings"
+        ),
+
+        BotCommand(
+            "hex",
+            "HEX → Pantone"
+        ),
+
+        BotCommand(
+            "image",
+            "Image → Pantone"
+        ),
+
+        BotCommand(
+            "rgb",
+            "RGB → Pantone"
+        ),
+
+        BotCommand(
+            "cmyk",
+            "CMYK → Pantone"
+        ),
+
+        BotCommand(
+            "tcx",
+            "TCX match"
+        ),
+
+        BotCommand(
+            "card",
+            "Generate color card"
+        ),
+
+        BotCommand(
+            "history",
+            "Match history"
+        ),
+
+        BotCommand(
+            "help",
+            "How to use"
+        ),
     ]
 
-    await application.bot.set_my_commands(commands)
+    await application.bot.set_my_commands(
+        commands
+    )
 
-    print("✅ Telegram command menu configured", flush=True)
+    print(
+        "✅ Telegram command menu configured",
+        flush=True
+    )
 
 
 # ============================================================
@@ -204,41 +270,49 @@ async def set_commands(application):
 def main_menu():
 
     keyboard = [
+
         [
             InlineKeyboardButton(
                 "🎨 Image → Pantone",
                 callback_data="image"
             ),
+
             InlineKeyboardButton(
                 "🔢 HEX → Pantone",
                 callback_data="hex"
             ),
         ],
+
         [
             InlineKeyboardButton(
                 "🌈 RGB → Pantone",
                 callback_data="rgb"
             ),
+
             InlineKeyboardButton(
                 "👕 TCX Match",
                 callback_data="tcx"
             ),
         ],
+
         [
             InlineKeyboardButton(
                 "🖼 Color Card",
                 callback_data="card"
             ),
+
             InlineKeyboardButton(
                 "📜 History",
                 callback_data="history"
             ),
         ],
+
         [
             InlineKeyboardButton(
                 "⚙️ Settings",
                 callback_data="settings"
             ),
+
             InlineKeyboardButton(
                 "❓ Help",
                 callback_data="help"
@@ -246,7 +320,9 @@ def main_menu():
         ],
     ]
 
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup(
+        keyboard
+    )
 
 
 # ============================================================
@@ -290,7 +366,7 @@ async def help_command(
         "• `/card` — Generate a color card\n"
         "• `/history` — View previous matches\n"
         "• `/settings` — Bot settings\n\n"
-        "You can also simply send an image.",
+        "You can also simply send me an image.",
         parse_mode="Markdown",
         reply_markup=main_menu(),
     )
@@ -360,7 +436,9 @@ async def rgb_command(
 
     if context.args:
 
-        value = " ".join(context.args)
+        value = " ".join(
+            context.args
+        )
 
         await process_rgb(
             update,
@@ -408,7 +486,8 @@ async def image_command(
     context.user_data["mode"] = "image"
 
     print(
-        f"🖼 /image requested by {update.effective_user.id}",
+        f"🖼 /image requested by "
+        f"{update.effective_user.id}",
         flush=True
     )
 
@@ -519,7 +598,9 @@ async def process_hex(
 
     try:
 
-        rgb = hex_to_rgb(value)
+        rgb = hex_to_rgb(
+            value
+        )
 
     except Exception as e:
 
@@ -539,7 +620,10 @@ async def process_hex(
 
     collection = None
 
-    if context.user_data.get("mode") == "tcx":
+    if context.user_data.get(
+        "mode"
+    ) == "tcx":
+
         collection = "TCX"
 
     try:
@@ -825,6 +909,8 @@ async def handle_photo(
         flush=True
     )
 
+    processing_message = None
+
     try:
 
         if not update.message:
@@ -846,11 +932,13 @@ async def handle_photo(
             return
 
         # ----------------------------------------------------
-        # Tell user processing has started
+        # PROCESSING MESSAGE
         # ----------------------------------------------------
 
-        processing_message = await update.message.reply_text(
-            "⏳ Processing your image..."
+        processing_message = (
+            await update.message.reply_text(
+                "⏳ Processing your image..."
+            )
         )
 
         print(
@@ -859,24 +947,25 @@ async def handle_photo(
         )
 
         # ----------------------------------------------------
-        # Get Telegram photo
+        # GET PHOTO
         # ----------------------------------------------------
 
         photo = update.message.photo[-1]
 
         print(
-            f"📸 Telegram file ID: {photo.file_id}",
+            f"📸 Telegram file ID: "
+            f"{photo.file_id}",
             flush=True
         )
 
         print(
-            f"📸 Telegram dimensions: "
+            f"📸 Dimensions: "
             f"{photo.width}x{photo.height}",
             flush=True
         )
 
         # ----------------------------------------------------
-        # Download
+        # DOWNLOAD PHOTO
         # ----------------------------------------------------
 
         print(
@@ -898,15 +987,18 @@ async def handle_photo(
             flush=True
         )
 
-        image_bytes = await telegram_file.download_as_bytearray()
+        image_bytes = (
+            await telegram_file.download_as_bytearray()
+        )
 
         print(
-            f"✅ Downloaded {len(image_bytes)} bytes",
+            f"✅ Downloaded "
+            f"{len(image_bytes)} bytes",
             flush=True
         )
 
         # ----------------------------------------------------
-        # Open image
+        # OPEN IMAGE
         # ----------------------------------------------------
 
         print(
@@ -933,7 +1025,9 @@ async def handle_photo(
             flush=True
         )
 
-        image = image.convert("RGB")
+        image = image.convert(
+            "RGB"
+        )
 
         print(
             "✅ Image converted to RGB",
@@ -941,7 +1035,7 @@ async def handle_photo(
         )
 
         # ----------------------------------------------------
-        # Extract dominant colors
+        # EXTRACT DOMINANT COLORS
         # ----------------------------------------------------
 
         print(
@@ -949,36 +1043,33 @@ async def handle_photo(
             flush=True
         )
 
+        # IMPORTANT:
+        # Your existing color_utils.py does NOT accept n=5.
         colors = extract_dominant_colors(
-            image,
-            n=5,
+            image
         )
 
         print(
-            f"✅ Dominant colors: {colors}",
+            f"✅ Extracted colors: {colors}",
             flush=True
         )
 
         if not colors:
 
-            print(
-                "❌ No colors extracted",
-                flush=True
-            )
-
             await processing_message.edit_text(
-                "❌ I couldn't extract colors from this image."
+                "❌ I couldn't extract colors "
+                "from this image."
             )
 
             return
 
         # ----------------------------------------------------
-        # Determine mode
+        # CURRENT MODE
         # ----------------------------------------------------
 
         mode = context.user_data.get(
             "mode",
-            "image",
+            "image"
         )
 
         print(
@@ -1027,11 +1118,6 @@ async def handle_photo(
                         )
                     )
 
-            print(
-                f"✅ Card matches: {len(matches_for_card)}",
-                flush=True
-            )
-
             if not matches_for_card:
 
                 await processing_message.edit_text(
@@ -1041,7 +1127,7 @@ async def handle_photo(
                 return
 
             print(
-                "🖼 Creating card image...",
+                "🖼 Creating color card...",
                 flush=True
             )
 
@@ -1058,33 +1144,30 @@ async def handle_photo(
 
             output.seek(0)
 
-            print(
-                "📤 Sending color card...",
-                flush=True
-            )
-
             await update.message.reply_photo(
                 photo=output,
-                caption="🖼 *MODEX PANTONE COLOR CARD*",
+                caption=(
+                    "🖼 *MODEX PANTONE COLOR CARD*"
+                ),
                 parse_mode="Markdown",
             )
 
             await processing_message.delete()
+
+            context.user_data.pop(
+                "mode",
+                None
+            )
 
             print(
                 "✅ COLOR CARD COMPLETE",
                 flush=True
             )
 
-            context.user_data.pop(
-                "mode",
-                None,
-            )
-
             return
 
         # ====================================================
-        # NORMAL IMAGE → PANTONE
+        # IMAGE → PANTONE
         # ====================================================
 
         results = []
@@ -1118,7 +1201,8 @@ async def handle_photo(
                 )
 
         print(
-            f"✅ Total matches: {len(results)}",
+            f"✅ Total matches: "
+            f"{len(results)}",
             flush=True
         )
 
@@ -1131,10 +1215,12 @@ async def handle_photo(
             return
 
         # ----------------------------------------------------
-        # Build response
+        # BUILD RESPONSE
         # ----------------------------------------------------
 
-        text = "🎨 *IMAGE → PANTONE*\n\n"
+        text = (
+            "🎨 *IMAGE → PANTONE*\n\n"
+        )
 
         for rgb, match in results:
 
@@ -1145,7 +1231,8 @@ async def handle_photo(
             )
 
             print(
-                f"🎯 {rgb} → {match['name']}",
+                f"🎯 {rgb} → "
+                f"{match['name']}",
                 flush=True
             )
 
@@ -1160,11 +1247,12 @@ async def handle_photo(
             text += (
                 f"🎨 RGB `{rgb}`\n"
                 f"→ *{match['name']}*\n"
-                f"Pantone RGB `{pantone_rgb}`\n\n"
+                f"Pantone RGB "
+                f"`{pantone_rgb}`\n\n"
             )
 
         # ----------------------------------------------------
-        # Send result
+        # SEND RESULT
         # ----------------------------------------------------
 
         print(
@@ -1177,14 +1265,14 @@ async def handle_photo(
             parse_mode="Markdown",
         )
 
+        context.user_data.pop(
+            "mode",
+            None
+        )
+
         print(
             "✅ IMAGE PROCESSING COMPLETE",
             flush=True
-        )
-
-        context.user_data.pop(
-            "mode",
-            None,
         )
 
     except Exception as e:
@@ -1209,17 +1297,31 @@ async def handle_photo(
 
         try:
 
-            await update.message.reply_text(
-                "❌ Something went wrong while processing "
-                "the image.\n\n"
-                f"Error: `{type(e).__name__}: {e}`",
-                parse_mode="Markdown",
+            error_text = (
+                "❌ *Something went wrong while "
+                "processing the image.*\n\n"
+                f"Error: `{type(e).__name__}: "
+                f"{e}`"
             )
+
+            if processing_message:
+
+                await processing_message.edit_text(
+                    error_text,
+                    parse_mode="Markdown",
+                )
+
+            else:
+
+                await update.message.reply_text(
+                    error_text,
+                    parse_mode="Markdown",
+                )
 
         except Exception as send_error:
 
             print(
-                f"❌ Could not send error message: "
+                f"❌ Couldn't send error: "
                 f"{send_error}",
                 flush=True
             )
@@ -1245,10 +1347,7 @@ async def handle_text(
         flush=True
     )
 
-    # --------------------------------------------------------
     # TCX
-    # --------------------------------------------------------
-
     if mode == "tcx":
 
         await process_hex(
@@ -1259,15 +1358,12 @@ async def handle_text(
 
         context.user_data.pop(
             "mode",
-            None,
+            None
         )
 
         return
 
-    # --------------------------------------------------------
     # HEX
-    # --------------------------------------------------------
-
     if mode == "hex":
 
         await process_hex(
@@ -1278,15 +1374,12 @@ async def handle_text(
 
         context.user_data.pop(
             "mode",
-            None,
+            None
         )
 
         return
 
-    # --------------------------------------------------------
     # RGB
-    # --------------------------------------------------------
-
     if mode == "rgb":
 
         await process_rgb(
@@ -1297,27 +1390,22 @@ async def handle_text(
 
         context.user_data.pop(
             "mode",
-            None,
+            None
         )
 
         return
 
-    # --------------------------------------------------------
     # CARD
-    # --------------------------------------------------------
-
     if mode == "card":
 
         await update.message.reply_text(
-            "🖼 Please send an image for the color card."
+            "🖼 Please send an image "
+            "for the color card."
         )
 
         return
 
-    # --------------------------------------------------------
-    # Automatic HEX
-    # --------------------------------------------------------
-
+    # AUTOMATIC HEX
     if text.startswith("#") or (
         len(text) in (6, 7)
         and all(
@@ -1334,10 +1422,7 @@ async def handle_text(
 
         return
 
-    # --------------------------------------------------------
-    # Automatic RGB
-    # --------------------------------------------------------
-
+    # AUTOMATIC RGB
     parts = (
         text
         .replace(",", " ")
@@ -1397,23 +1482,17 @@ async def button_handler(
         flush=True
     )
 
-    # --------------------------------------------------------
     # IMAGE
-    # --------------------------------------------------------
-
     if data == "image":
 
         context.user_data["mode"] = "image"
 
         await query.message.reply_text(
-            "🎨 Send me an image and I'll match its "
-            "dominant colors to Pantone."
+            "🎨 Send me an image and I'll match "
+            "its dominant colors to Pantone."
         )
 
-    # --------------------------------------------------------
     # HEX
-    # --------------------------------------------------------
-
     elif data == "hex":
 
         context.user_data["mode"] = "hex"
@@ -1425,10 +1504,7 @@ async def button_handler(
             parse_mode="Markdown",
         )
 
-    # --------------------------------------------------------
     # RGB
-    # --------------------------------------------------------
-
     elif data == "rgb":
 
         context.user_data["mode"] = "rgb"
@@ -1440,10 +1516,7 @@ async def button_handler(
             parse_mode="Markdown",
         )
 
-    # --------------------------------------------------------
     # TCX
-    # --------------------------------------------------------
-
     elif data == "tcx":
 
         context.user_data["mode"] = "tcx"
@@ -1456,22 +1529,17 @@ async def button_handler(
             parse_mode="Markdown",
         )
 
-    # --------------------------------------------------------
     # CARD
-    # --------------------------------------------------------
-
     elif data == "card":
 
         context.user_data["mode"] = "card"
 
         await query.message.reply_text(
-            "🖼 Send an image and I'll generate a color card."
+            "🖼 Send an image and I'll generate "
+            "a color card."
         )
 
-    # --------------------------------------------------------
     # HISTORY
-    # --------------------------------------------------------
-
     elif data == "history":
 
         rows = get_history(
@@ -1486,7 +1554,9 @@ async def button_handler(
 
             return
 
-        text = "📜 *YOUR MATCH HISTORY*\n\n"
+        text = (
+            "📜 *YOUR MATCH HISTORY*\n\n"
+        )
 
         for row in rows:
 
@@ -1509,10 +1579,7 @@ async def button_handler(
             parse_mode="Markdown",
         )
 
-    # --------------------------------------------------------
     # SETTINGS
-    # --------------------------------------------------------
-
     elif data == "settings":
 
         await query.message.reply_text(
@@ -1523,10 +1590,7 @@ async def button_handler(
             parse_mode="Markdown",
         )
 
-    # --------------------------------------------------------
     # HELP
-    # --------------------------------------------------------
-
     elif data == "help":
 
         await query.message.reply_text(
@@ -1598,7 +1662,7 @@ def main():
     # Database
     init_db()
 
-    # Render HTTP server
+    # Render Web Server
     web_thread = threading.Thread(
         target=run_web_server,
         daemon=True,
@@ -1626,70 +1690,70 @@ def main():
     application.add_handler(
         CommandHandler(
             "start",
-            start,
+            start
         )
     )
 
     application.add_handler(
         CommandHandler(
             "help",
-            help_command,
+            help_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "settings",
-            settings_command,
+            settings_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "hex",
-            hex_command,
+            hex_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "rgb",
-            rgb_command,
+            rgb_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "cmyk",
-            cmyk_command,
+            cmyk_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "image",
-            image_command,
+            image_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "tcx",
-            tcx_command,
+            tcx_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "card",
-            card_command,
+            card_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "history",
-            history_command,
+            history_command
         )
     )
 
@@ -1710,7 +1774,7 @@ def main():
     application.add_handler(
         MessageHandler(
             filters.PHOTO,
-            handle_photo,
+            handle_photo
         )
     )
 
@@ -1721,7 +1785,7 @@ def main():
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            handle_text,
+            handle_text
         )
     )
 
@@ -1754,7 +1818,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # START POLLING
+    # TELEGRAM POLLING
     # --------------------------------------------------------
 
     application.run_polling(
@@ -1763,8 +1827,9 @@ def main():
 
 
 # ============================================================
-# RUN
+# START
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
